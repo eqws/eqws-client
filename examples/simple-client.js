@@ -1,7 +1,7 @@
 const Socket = require('../');
 
 const client = new Socket({
-	url: 'ws://localhost:3001'
+	url: 'ws://localhost:3000'
 });
 
 client.on('connected', () => {

@@ -1,7 +1,9 @@
 const EventEmitter = require('eventemitter3');
 const debug        = require('debug')('eqws-client:socket');
 const error        = require('debug')('eqws-client:socket:error');
+const uid          = require('./uid');
 const Protocol     = require('../../eqws-protocol');
+const ApiError     = Protocol.ApiError;
 const Packet       = Protocol.Packet;
 const C            = Protocol.C;
 
@@ -17,6 +19,7 @@ class Socket extends EventEmitter {
 		// Define default opts
 		if (!opts.url) opts.url = '/';
 		if (!opts.protocol) opts.protocol = 'ws';
+		if (!opts.rpcTimeout) opts.rpcTimeout = 10000; // 10s
 
 		// Detect domain
 		if (global.window) {
@@ -26,6 +29,8 @@ class Socket extends EventEmitter {
 				opts.url = `${opts.protocol}://${window.location.hostname}${opts.url}`;
 			}
 		}
+
+		this._requests = {};
 
 		// Initialize socket
 		this._options = opts;
@@ -64,6 +69,41 @@ class Socket extends EventEmitter {
 		const packet = new Packet(C.PACKET_TYPES.EVENT, args);
 
 		this._sendPacket(packet);
+	}
+
+	call(method, args, callback) {
+		if ('function' === typeof args) {
+			callback = args;
+			args = undefined;
+		}
+
+		const id = uid();
+		const request = [id, method, args];
+		const packet = new Packet(C.PACKET_TYPES.RPC, request);
+
+		debug('rpc request=%j', request);
+
+		const promise = new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				delete this._requests[id];
+				reject(new ApiError('TIMEOUT'));
+			}, this._options.rpcTimeout);
+
+			this._requests[id] = {
+				promise: {resolve, reject},
+				method,
+				timeout
+			};
+
+			this._sendPacket(packet);
+		});
+
+		if (callback) {
+			promise.then(callback.bind(null, null));
+			promise.catch(callback);
+		}
+
+		return promise;
 	}
 
 	_sendPacket(packet) {
@@ -110,12 +150,41 @@ class Socket extends EventEmitter {
 				case C.PACKET_TYPES.EVENT:
 					emit.apply(this, packet.data);
 					break;
+
+				case C.PACKET_TYPES.RPC:
+					this._onRpcPacket(packet);
+					break;
 			}
 
 			emit.call(this, 'packet', packet);
 		} catch (err) {
 			this._onError(err);
 		}
+	}
+
+	_onRpcPacket(packet) {
+		const response = packet.data;
+		const reqId = response[0];
+		const result = response[2];
+
+		const request = this._requests[reqId];
+
+		if (!request) {
+			return debug('ingonre unknown rpc response');
+		}
+
+		clearTimeout(request.timeout);
+		delete this._requests[reqId];
+
+		// Error handler
+		if (result.error_code !== undefined && result.error_code !== null) {
+			let err = new ApiError(result.error_code, result.error_msg);
+
+			this._onError(err);
+			return request.promise.reject(err);
+		}
+
+		request.promise.resolve(result.response, result);
 	}
 
 	_onClose() {
