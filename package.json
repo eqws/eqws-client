@@ -17,6 +17,7 @@
   },
   "homepage": "https://github.com/eqws/eqws-client#readme",
   "dependencies": {
+    "eqws-protocol": "git+https://github.com/eqws/eqws-protocol.git",
     "debug": "^2.6.3",
     "eventemitter3": "^2.0.2",
     "ws": "^2.2.2"
